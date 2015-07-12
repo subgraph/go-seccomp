@@ -2,7 +2,7 @@
 
 package seccomp
 
-// #include <asm/unistd.h>
+// #include "unistd.h"
 import "C"
 
 // syscallNum maps system call names to numbers.

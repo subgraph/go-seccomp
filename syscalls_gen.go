@@ -6,8 +6,8 @@
 
 // syscalls_gen processes system headers and generates a mapping from system call names to numbers.
 // Usage:
-//   $ echo "#include <asm-generic/unistd_64.h>" | x86_64-cros-linux-gnu-gcc     -E -dD - | go run syscalls_gen.go | gofmt > syscalls_amd64.go
-//   $ echo "#include <asm-generic/unistd_64.h>" | i686-pc-linux-gnu-gcc         -E -dD - | go run syscalls_gen.go | gofmt > syscalls_386.go
+//   $ echo "#include \"unistd_64.h\"" | x86_64-cros-linux-gnu-gcc     -E -dD - | go run syscalls_gen.go | gofmt > syscalls_amd64.go
+//   $ echo "#include \"unistd_64.h\"" | i686-pc-linux-gnu-gcc         -E -dD - | go run syscalls_gen.go | gofmt > syscalls_386.go
 //   $ echo "#include <asm-generic/unistd_64.h>" | armv7a-cros-linux-gnueabi-gcc -E -dD - | go run syscalls_gen.go | gofmt > syscalls_arm.go
 package main
 

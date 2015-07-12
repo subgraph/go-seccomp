@@ -48,10 +48,9 @@ import (
 )
 
 // #include <sys/prctl.h>
-// #include <asm-generic/unistd_64.h>
-// #include <uapi/linux/seccomp.h>
+// #include "unistd_64.h"
+// #include "seccomp.h"
 import "C"
-
 
 // SeccompData is the format the BPF program executes over.
 // This struct mirrors struct seccomp_data from <linux/seccomp.h>.
@@ -343,7 +342,6 @@ func compile(ps []policy, long bool, def SockFilter) ([]SockFilter, error) {
 			return nil, fmt.Errorf("unknown syscall: %s", p.name)
 		}
 		jne(uint32(nr), "nextcall")
-		fmt.Println(p.def)
 		for _, and := range p.expr {
 			for _, arg := range and {
 				val := struct{ high, low uint32 }{uint32(arg.val >> 32), uint32(arg.val)}

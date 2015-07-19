@@ -281,29 +281,6 @@ func CompileBlacklist(path string) ([]SockFilter, error) {
 	return compileblacklist(ps, nbits > 32, bpfRet(retAllow()))
 }
 
-// Load makes the seccomp system call to install the bpf filter for
-// all threads (with tsync). prctl(set_no_new_privs, 1) must have
-// been called (from the same thread) before calling Load for the
-// first time.
-//   Most users of this library should use Install instead of calling
-//   Load directly. There are a couple of situations where it may be
-//   necessary to use Load instead of Install:
-//   - If a previous call to Install has disabled the 'prctl' system
-//     call, Install cannot be called again. In that case, it is safe
-//     to add additional filters directly with Load.
-//   - If the process is running as a priviledged user, and you want
-//     to load the seccomp filter without setting no_new_privs.
-func LoadBlacklist(bpf []SockFilter) error {
-	if size, limit := len(bpf), 0xffff; size > limit {
-		return fmt.Errorf("filter program too big: %d bpf instructions (limit = %d)", size, limit)
-	}
-	prog := &SockFprog{
-		Filter: &bpf[0],
-		Len:    uint16(len(bpf)),
-	}
-	return seccomp(C.SECCOMP_SET_MODE_FILTER, C.SECCOMP_FILTER_FLAG_TSYNC, unsafe.Pointer(prog))
-}
-
 // Install makes the necessary system calls to install the Seccomp-BPF
 // filter for the current process (all threads). Install can be called
 // multiple times to install additional filters.

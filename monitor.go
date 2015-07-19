@@ -1,3 +1,7 @@
+// Extending for monitoring support in Subgraph Oz
+// Much refactoring on this remains to be done.
+// Original copyright and license below.
+//
 // Copyright 2015 The Chromium OS Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
@@ -36,10 +40,8 @@
 package seccomp
 
 import (
-	"bytes"
 	"fmt"
 	"io/ioutil"
-	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -52,143 +54,8 @@ import (
 // #include "seccomp.h"
 import "C"
 
-// SeccompData is the format the BPF program executes over.
-// This struct mirrors struct seccomp_data from <linux/seccomp.h>.
-type SeccompData struct {
-	NR                 int32     // The system call number.
-	Arch               uint32    // System call convention as an AUDIT_ARCH_* value.
-	InstructionPointer uint64    // At the time of the system call.
-	Args               [6]uint64 // System call arguments (always stored as 64-bit values).
-}
-
-// C version of the struct used for sanity checking.
-type seccomp_data C.struct_seccomp_data
-
-// bpfLoadNR returns the instruction to load the NR field in SeccompData.
-func bpfLoadNR() SockFilter {
-	return bpfLoad(unsafe.Offsetof(SeccompData{}.NR))
-}
-
-// bpfLoadArch returns the instruction to load the Arch field in SeccompData.
-func bpfLoadArch() SockFilter {
-	return bpfLoad(unsafe.Offsetof(SeccompData{}.Arch))
-}
-
-// bpfLoadArg returns the instruction to load one word of an argument in SeccompData.
-func bpfLoadArg(arg, word int) SockFilter {
-	return bpfLoad(unsafe.Offsetof(SeccompData{}.Args) + uintptr(((2*arg)+word)*4))
-}
-
-// retKill returns the code for seccomp kill action.
-func retKill() uint32 {
-	return C.SECCOMP_RET_KILL
-}
-
-// retTrap returns the code for seccomp trap action.
-func retTrap() uint32 {
-	return C.SECCOMP_RET_TRAP
-}
-
-// retErrno returns the code for seccomp errno action with the specified errno embedded.
-func retErrno(errno syscall.Errno) uint32 {
-	return C.SECCOMP_RET_ERRNO | (uint32(errno) & C.SECCOMP_RET_DATA)
-}
-
-// retAllow returns the code for seccomp allow action.
-func retAllow() uint32 {
-	return C.SECCOMP_RET_ALLOW
-}
-
-func retTrace() uint32 {
-	return C.SECCOMP_RET_TRACE 
-}
-// policy represents the seccomp policy for a single syscall.
-type policy struct {
-	// name of the syscall.
-	name string
-
-	// expr is evaluated on the syscall arguments.
-	// nil expr evaluates to false.
-	expr orExpr
-
-	// then is executed if the expr evaluates to true.
-	// (cannot be specified in policy file, used in tests only).
-	then SockFilter
-
-	// default action (else) if the expr evaluates to false.
-	// nil means jump to end of program for the overall default.
-	def *SockFilter
-}
-
-// orExpr is a list of and expressions.
-type orExpr []andExpr
-
-// andExpr is a list of arg comparisons.
-type andExpr []argComp
-
-// argComp represents a basic argument comparison in the policy.
-type argComp struct {
-	idx  int    // 0..5 for indexing into SeccompData.Args.
-	oper string // comparison operator: "==", "!=", or "&".
-	val  uint64 // upper 32 bits compared only if nbits>32.
-}
-
-// String converts the internal policy representation back to policy file syntax.
-func (p policy) String() string {
-	var buf bytes.Buffer
-	fmt.Fprintf(&buf, "%s: ", p.name)
-
-	for i, and := range p.expr {
-		if i > 0 {
-			fmt.Fprintf(&buf, " || ")
-		}
-		for j, arg := range and {
-			if j > 0 {
-				fmt.Fprintf(&buf, " && ")
-			}
-			fmt.Fprintf(&buf, "arg%d %s %#x", arg.idx, arg.oper, arg.val)
-		}
-	}
-
-	pret := func(f SockFilter) {
-		if f.Code == opRET {
-			switch f.K & C.SECCOMP_RET_ACTION {
-			case C.SECCOMP_RET_ALLOW:
-				fmt.Fprintf(&buf, "1")
-				return
-			case C.SECCOMP_RET_ERRNO:
-				fmt.Fprintf(&buf, "return %d", f.K&C.SECCOMP_RET_DATA)
-				return
-			}
-		}
-		fmt.Fprintf(&buf, "%s", f)
-	}
-	if p.then != bpfRet(retAllow()) {
-		fmt.Fprintf(&buf, " ? ")
-		pret(p.then)
-	}
-	if p.def != nil {
-		if p.expr != nil {
-			fmt.Fprintf(&buf, "; ")
-		}
-		pret(*p.def)
-	}
-
-	return buf.String()
-}
-
-// Syntax of policy line for a single syscall.
-var (
-	allowRE      = regexp.MustCompile(`^([[:word:]]+) *: *1$`)
-	returnRE     = regexp.MustCompile(`^([[:word:]]+) *: *return *([[:word:]]+)$`)
-	exprRE       = regexp.MustCompile(`^([[:word:]]+) *:([^;]+)$`)
-	exprReturnRE = regexp.MustCompile(`^([[:word:]]+) *:([^;]+); *return *([[:word:]]+)$`)
-
-	argRE = regexp.MustCompile(`^arg([0-5]) *(==|!=|&) *([[:word:]]+)$`)
-)
-
 // parseLine parses the policy line for a single syscall.
-func parseLine(line string) (policy, error) {
+func parseLineBlacklist(line string) (policy, error) {
 	var name, expr, ret string
 	var then SockFilter
 	var def *SockFilter
@@ -196,7 +63,7 @@ func parseLine(line string) (policy, error) {
 	line = strings.TrimSpace(line)
 	if match := allowRE.FindStringSubmatch(line); match != nil {
 		name = match[1]
-		def = ptr(bpfRet(retAllow()))
+		def = ptr(bpfRet(retTrace()))
 	} else if match = returnRE.FindStringSubmatch(line); match != nil {
 		name = match[1]
 		ret = match[2]
@@ -240,7 +107,7 @@ func parseLine(line string) (policy, error) {
 		}
 	}
 
-	then = bpfRet(retAllow())
+	then = bpfRet(retTrace())
 
 	if ret != "" {
 		errno, err := strconv.ParseUint(ret, 0, 16)
@@ -256,7 +123,7 @@ func parseLine(line string) (policy, error) {
 // parseLines parses multiple policy lines, each one for a single syscall.
 // Empty lines and lines beginning with "#" are ignored.
 // Multiple policies for a syscall are detected and reported as error.
-func parseLines(lines []string) ([]policy, error) {
+func parseLinesMonitor(lines []string) ([]policy, error) {
 	var ps []policy
 	seen := make(map[string]int)
 	for i, line := range lines {
@@ -264,7 +131,7 @@ func parseLines(lines []string) ([]policy, error) {
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
-		p, err := parseLine(line)
+		p, err := parseLineMonitor(line)
 		if err != nil {
 			return nil, fmt.Errorf("line %d: %v", lineno, err)
 		}
@@ -279,19 +146,19 @@ func parseLines(lines []string) ([]policy, error) {
 }
 
 // parseFile reads a Chromium-OS Seccomp-BPF policy file and parses its contents.
-func parseFile(path string) ([]policy, error) {
+func parseFileMonitor(path string) ([]policy, error) {
 	file, err := ioutil.ReadFile(path)
 	if err != nil {
 		return nil, err
 	}
-	return parseLines(strings.Split(string(file), "\n"))
+	return parseLinesMonitor(strings.Split(string(file), "\n"))
 }
 
 // compile compiles a Seccomp-BPF program implementing the syscall policies.
 // long specifies whether to generate 32-bit or 64-bit argument comparisons.
 // def is the overall default action to take when the syscall does not match
 // any policy in the filter.
-func compile(ps []policy, long bool, def SockFilter) ([]SockFilter, error) {
+func compileMonitorFilter(ps []policy, long bool, def SockFilter) ([]SockFilter, error) {
 	var bpf []SockFilter
 	do := func(insn SockFilter) {
 		bpf = append(bpf, insn)
@@ -406,85 +273,18 @@ func compile(ps []policy, long bool, def SockFilter) ([]SockFilter, error) {
 
 // Compile reads a Chromium-OS policy file and compiles a
 // Seccomp-BPF filter program implementing the policies.
-func Compile(path string) ([]SockFilter, error) {
-	ps, err := parseFile(path)
+func CompileMonitorFilter(path string) ([]SockFilter, error) {
+	ps, err := parseFileMonitor(path)
 	if err != nil {
 		return nil, err
 	}
-	return compile(ps, nbits > 32, bpfRet(retKill()))
-}
-
-// prctl is a wrapper for the 'prctl' system call.
-// See 'man prctl' for details.
-func prctl(option uintptr, args ...uintptr) error {
-	if len(args) > 4 {
-		return syscall.E2BIG
-	}
-	var arg [4]uintptr
-	copy(arg[:], args)
-	_, _, e := syscall.Syscall6(C.__NR_prctl, option, arg[0], arg[1], arg[2], arg[3], 0)
-	if e != 0 {
-		return e
-	}
-	return nil
-}
-
-// seccomp is a wrapper for the 'seccomp' system call.
-// See <linux/seccomp.h> for valid op and flag values.
-// uargs is typically a pointer to struct sock_fprog.
-func seccomp(op, flags uintptr, uargs unsafe.Pointer) error {
-	_, _, e := syscall.Syscall(C.__NR_seccomp, op, flags, uintptr(uargs))
-	if e != 0 {
-		return e
-	}
-	return nil
-}
-
-// CheckSupport checks for the required seccomp support in the kernel.
-func CheckSupport() error {
-	// This is based on http://outflux.net/teach-seccomp/autodetect.html.
-	if err := prctl(C.PR_GET_SECCOMP); err != nil {
-		return fmt.Errorf("seccomp not available: %v", err)
-	}
-	if err := prctl(C.PR_SET_SECCOMP, C.SECCOMP_MODE_FILTER, 0); err != syscall.EFAULT {
-		return fmt.Errorf("seccomp filter not available: %v", err)
-	}
-	if err := seccomp(C.SECCOMP_SET_MODE_FILTER, 0, nil); err != syscall.EFAULT {
-		return fmt.Errorf("seccomp syscall not available: %v", err)
-	}
-	if err := seccomp(C.SECCOMP_SET_MODE_FILTER, C.SECCOMP_FILTER_FLAG_TSYNC, nil); err != syscall.EFAULT {
-		return fmt.Errorf("seccomp tsync not available: %v", err)
-	}
-	return nil
-}
-
-// Load makes the seccomp system call to install the bpf filter for
-// all threads (with tsync). prctl(set_no_new_privs, 1) must have
-// been called (from the same thread) before calling Load for the
-// first time.
-//   Most users of this library should use Install instead of calling
-//   Load directly. There are a couple of situations where it may be
-//   necessary to use Load instead of Install:
-//   - If a previous call to Install has disabled the 'prctl' system
-//     call, Install cannot be called again. In that case, it is safe
-//     to add additional filters directly with Load.
-//   - If the process is running as a priviledged user, and you want
-//     to load the seccomp filter without setting no_new_privs.
-func Load(bpf []SockFilter) error {
-	if size, limit := len(bpf), 0xffff; size > limit {
-		return fmt.Errorf("filter program too big: %d bpf instructions (limit = %d)", size, limit)
-	}
-	prog := &SockFprog{
-		Filter: &bpf[0],
-		Len:    uint16(len(bpf)),
-	}
-	return seccomp(C.SECCOMP_SET_MODE_FILTER, C.SECCOMP_FILTER_FLAG_TSYNC, unsafe.Pointer(prog))
+	return compileMonitorFilter(ps, nbits > 32, bpfRet(retAllow()))
 }
 
 // Install makes the necessary system calls to install the Seccomp-BPF
 // filter for the current process (all threads). Install can be called
 // multiple times to install additional filters.
-func Install(bpf []SockFilter) error {
+func InstallMonitorFilter(bpf []SockFilter) error {
 	// prctl(set_no_new_privs, 1) must be called (from the same thread)
 	// before a seccomp filter can be installed by an unprivileged user:
 	// - http://www.kernel.org/doc/Documentation/prctl/no_new_privs.txt.

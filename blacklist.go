@@ -46,7 +46,6 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
-	"unsafe"
 )
 
 // #include <sys/prctl.h>

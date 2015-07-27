@@ -46,7 +46,6 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
-	"unsafe"
 )
 
 // #include <sys/prctl.h>
@@ -55,7 +54,7 @@ import (
 import "C"
 
 // parseLine parses the policy line for a single syscall.
-func parseLineBlacklist(line string) (policy, error) {
+func parseLineMonitor(line string) (policy, error) {
 	var name, expr, ret string
 	var then SockFilter
 	var def *SockFilter

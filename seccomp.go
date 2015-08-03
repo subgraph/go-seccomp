@@ -249,7 +249,11 @@ func parseLine(line string, enforce bool) (policy, error) {
 		if err != nil {
 			return policy{}, fmt.Errorf("invalid errno: %s", ret)
 		}
-		def = ptr(bpfRet(retErrno(syscall.Errno(errno))))
+		if (enforce == false) {
+			def = ptr(bpfRet(retTrace()))
+		} else {
+			def = ptr(bpfRet(retErrno(syscall.Errno(errno))))
+		}
 	}
 
 	return policy{name, or, then, def}, nil
@@ -338,12 +342,7 @@ func compile(ps []policy, long bool, def SockFilter, enforce bool) ([]SockFilter
 
 	do(bpfLoadArch())
 	do(bpfJeq(auditArch, 1, 0))
-
-	if enforce == true {
-		do(bpfRet(retKill()))
-	} else {
-		do(bpfRet(retTrace()))
-	}
+	do(bpfRet(retKill()))
 
 	do(bpfLoadNR())
 	for _, p := range ps {
@@ -418,7 +417,13 @@ func Compile(path string, enforce bool) ([]SockFilter, error) {
 	if err != nil {
 		return nil, err
 	}
-	return compile(ps, nbits > 32, bpfRet(retKill()), enforce)
+	var op SockFilter
+	if enforce == true {
+		op = bpfRet(retKill())
+	} else {
+		op = bpfRet(retTrace())
+	}
+	return compile(ps, nbits > 32, op, enforce)
 }
 
 // prctl is a wrapper for the 'prctl' system call.

@@ -210,12 +210,8 @@ func compileBlacklist(ps []policy, long bool, def SockFilter, enforce bool) ([]S
 
 	do(bpfLoadArch())
 	do(bpfJeq(auditArch, 1, 0))
-	if enforce == true {
-		do(bpfRet(retKill()))
-	} else
-	{
-		do(bpfRet(retTrace()))
-	}
+	do(bpfRet(retKill()))
+	do(bpfRet(retTrace()))
 
 	do(bpfLoadNR())
 	for _, p := range ps {

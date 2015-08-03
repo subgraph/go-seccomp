@@ -54,7 +54,7 @@ import (
 import "C"
 
 // parseLine parses the policy line for a single syscall.
-func parseLineBlacklist(line string) (policy, error) {
+func parseLineBlacklist(line string, enforce bool) (policy, error) {
 	var name, expr, ret string
 	var then SockFilter
 	var def *SockFilter
@@ -62,7 +62,11 @@ func parseLineBlacklist(line string) (policy, error) {
 	line = strings.TrimSpace(line)
 	if match := allowRE.FindStringSubmatch(line); match != nil {
 		name = match[1]
-		def = ptr(bpfRet(retKill()))
+		if enforce == true {
+			def = ptr(bpfRet(retKill()))
+		} else {
+			def = ptr(bpfRet(retTrace()))
+		}
 	} else if match = returnRE.FindStringSubmatch(line); match != nil {
 		name = match[1]
 		ret = match[2]
@@ -106,7 +110,11 @@ func parseLineBlacklist(line string) (policy, error) {
 		}
 	}
 
-	then = bpfRet(retKill())
+	if enforce == true {
+		then = bpfRet(retKill())
+	} else {
+		then = bpfRet(retTrace())
+	}
 
 	if ret != "" {
 		errno, err := strconv.ParseUint(ret, 0, 16)
@@ -122,7 +130,7 @@ func parseLineBlacklist(line string) (policy, error) {
 // parseLines parses multiple policy lines, each one for a single syscall.
 // Empty lines and lines beginning with "#" are ignored.
 // Multiple policies for a syscall are detected and reported as error.
-func parseLinesBlacklist(lines []string) ([]policy, error) {
+func parseLinesBlacklist(lines []string, enforce bool) ([]policy, error) {
 	var ps []policy
 	seen := make(map[string]int)
 	for i, line := range lines {
@@ -130,7 +138,7 @@ func parseLinesBlacklist(lines []string) ([]policy, error) {
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
-		p, err := parseLineBlacklist(line)
+		p, err := parseLineBlacklist(line, enforce)
 		if err != nil {
 			return nil, fmt.Errorf("line %d: %v", lineno, err)
 		}
@@ -145,19 +153,19 @@ func parseLinesBlacklist(lines []string) ([]policy, error) {
 }
 
 // parseFile reads a Chromium-OS Seccomp-BPF policy file and parses its contents.
-func parseFileBlacklist(path string) ([]policy, error) {
+func parseFileBlacklist(path string, enforce bool) ([]policy, error) {
 	file, err := ioutil.ReadFile(path)
 	if err != nil {
 		return nil, err
 	}
-	return parseLinesBlacklist(strings.Split(string(file), "\n"))
+	return parseLinesBlacklist(strings.Split(string(file), "\n"), enforce)
 }
 
 // compile compiles a Seccomp-BPF program implementing the syscall policies.
 // long specifies whether to generate 32-bit or 64-bit argument comparisons.
 // def is the overall default action to take when the syscall does not match
 // any policy in the filter.
-func compileblacklist(ps []policy, long bool, def SockFilter) ([]SockFilter, error) {
+func compileBlacklist(ps []policy, long bool, def SockFilter, enforce bool) ([]SockFilter, error) {
 	var bpf []SockFilter
 	do := func(insn SockFilter) {
 		bpf = append(bpf, insn)
@@ -202,7 +210,12 @@ func compileblacklist(ps []policy, long bool, def SockFilter) ([]SockFilter, err
 
 	do(bpfLoadArch())
 	do(bpfJeq(auditArch, 1, 0))
-	do(bpfRet(retKill()))
+	if enforce == true {
+		do(bpfRet(retKill()))
+	} else
+	{
+		do(bpfRet(retTrace()))
+	}
 
 	do(bpfLoadNR())
 	for _, p := range ps {
@@ -272,12 +285,12 @@ func compileblacklist(ps []policy, long bool, def SockFilter) ([]SockFilter, err
 
 // Compile reads a Chromium-OS policy file and compiles a
 // Seccomp-BPF filter program implementing the policies.
-func CompileBlacklist(path string) ([]SockFilter, error) {
-	ps, err := parseFileBlacklist(path)
+func CompileBlacklist(path string, enforce bool) ([]SockFilter, error) {
+	ps, err := parseFileBlacklist(path, enforce)
 	if err != nil {
 		return nil, err
 	}
-	return compileblacklist(ps, nbits > 32, bpfRet(retAllow()))
+	return compileBlacklist(ps, nbits > 32, bpfRet(retAllow()), enforce)
 }
 
 // Install makes the necessary system calls to install the Seccomp-BPF

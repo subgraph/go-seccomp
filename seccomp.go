@@ -100,7 +100,7 @@ func retAllow() uint32 {
 }
 
 func retTrace() uint32 {
-	return C.SECCOMP_RET_TRACE 
+	return C.SECCOMP_RET_TRACE
 }
 // policy represents the seccomp policy for a single syscall.
 type policy struct {
@@ -188,7 +188,7 @@ var (
 )
 
 // parseLine parses the policy line for a single syscall.
-func parseLine(line string) (policy, error) {
+func parseLine(line string, enforce bool) (policy, error) {
 	var name, expr, ret string
 	var then SockFilter
 	var def *SockFilter
@@ -239,9 +239,11 @@ func parseLine(line string) (policy, error) {
 			or = append(or, and)
 		}
 	}
-
-	then = bpfRet(retAllow())
-
+	if enforce == true {
+		then = bpfRet(retAllow())
+	} else {
+		then = bpfRet(retTrace())
+	}
 	if ret != "" {
 		errno, err := strconv.ParseUint(ret, 0, 16)
 		if err != nil {
@@ -256,7 +258,7 @@ func parseLine(line string) (policy, error) {
 // parseLines parses multiple policy lines, each one for a single syscall.
 // Empty lines and lines beginning with "#" are ignored.
 // Multiple policies for a syscall are detected and reported as error.
-func parseLines(lines []string) ([]policy, error) {
+func parseLines(lines []string, enforce bool) ([]policy, error) {
 	var ps []policy
 	seen := make(map[string]int)
 	for i, line := range lines {
@@ -264,7 +266,7 @@ func parseLines(lines []string) ([]policy, error) {
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
-		p, err := parseLine(line)
+		p, err := parseLine(line, enforce)
 		if err != nil {
 			return nil, fmt.Errorf("line %d: %v", lineno, err)
 		}
@@ -279,19 +281,19 @@ func parseLines(lines []string) ([]policy, error) {
 }
 
 // parseFile reads a Chromium-OS Seccomp-BPF policy file and parses its contents.
-func parseFile(path string) ([]policy, error) {
+func parseFile(path string, enforce bool) ([]policy, error) {
 	file, err := ioutil.ReadFile(path)
 	if err != nil {
 		return nil, err
 	}
-	return parseLines(strings.Split(string(file), "\n"))
+	return parseLines(strings.Split(string(file), "\n"), enforce)
 }
 
 // compile compiles a Seccomp-BPF program implementing the syscall policies.
 // long specifies whether to generate 32-bit or 64-bit argument comparisons.
 // def is the overall default action to take when the syscall does not match
 // any policy in the filter.
-func compile(ps []policy, long bool, def SockFilter) ([]SockFilter, error) {
+func compile(ps []policy, long bool, def SockFilter, enforce bool) ([]SockFilter, error) {
 	var bpf []SockFilter
 	do := func(insn SockFilter) {
 		bpf = append(bpf, insn)
@@ -336,7 +338,12 @@ func compile(ps []policy, long bool, def SockFilter) ([]SockFilter, error) {
 
 	do(bpfLoadArch())
 	do(bpfJeq(auditArch, 1, 0))
-	do(bpfRet(retKill()))
+
+	if enforce == true {
+		do(bpfRet(retKill()))
+	} else {
+		do(bpfRet(retTrace()))
+	}
 
 	do(bpfLoadNR())
 	for _, p := range ps {
@@ -406,12 +413,12 @@ func compile(ps []policy, long bool, def SockFilter) ([]SockFilter, error) {
 
 // Compile reads a Chromium-OS policy file and compiles a
 // Seccomp-BPF filter program implementing the policies.
-func Compile(path string) ([]SockFilter, error) {
-	ps, err := parseFile(path)
+func Compile(path string, enforce bool) ([]SockFilter, error) {
+	ps, err := parseFile(path, enforce)
 	if err != nil {
 		return nil, err
 	}
-	return compile(ps, nbits > 32, bpfRet(retKill()))
+	return compile(ps, nbits > 32, bpfRet(retKill()), enforce)
 }
 
 // prctl is a wrapper for the 'prctl' system call.

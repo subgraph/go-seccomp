@@ -239,11 +239,7 @@ func parseLine(line string, enforce bool) (policy, error) {
 			or = append(or, and)
 		}
 	}
-	if enforce == true {
-		then = bpfRet(retAllow())
-	} else {
-		then = bpfRet(retTrace())
-	}
+	then = bpfRet(retAllow())
 	if ret != "" {
 		errno, err := strconv.ParseUint(ret, 0, 16)
 		if err != nil {
